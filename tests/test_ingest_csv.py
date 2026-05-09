@@ -3,7 +3,7 @@ from pathlib import Path
 import sqlite_utils
 
 from mesa.ingest import precheck_paths, run
-from mesa.validator import ValidatedDefinition
+from mesa.validator import CsvDefinition, ValidatedDefinition
 
 
 def _digits(v: object) -> str | None:
@@ -16,9 +16,7 @@ def _digits(v: object) -> str | None:
 def _vd(raw: dict) -> ValidatedDefinition:
     return ValidatedDefinition(
         source_path=Path("definitions/contacts.py"),
-        key=raw["key"],
-        raw=raw,
-        tables=[raw["table"]],
+        definition=CsvDefinition.model_validate(raw),
     )
 
 

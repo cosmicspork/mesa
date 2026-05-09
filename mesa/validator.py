@@ -1,19 +1,172 @@
-"""Validates definition contracts and runs cross-definition checks."""
+"""Validates definition contracts and runs cross-definition checks.
+
+The per-definition contract is expressed as pydantic models (CsvDefinition,
+XlsxPerTabDefinition, XlsxConcatDefinition). Cross-definition checks
+(duplicate keys, table-name collisions, missing ACTIVE keys) need the full
+set and live in `_cross_definition_checks` below.
+"""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
+from pydantic import ValidationError as PydanticValidationError
 
 from mesa.loader import LoadedDefinition
 
-NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-ALLOWED_TYPES = {"int", "float", "text", "bool", "date", "datetime"}
-ALLOWED_KINDS = {"xlsx", "csv"}
-ALLOWED_XLSX_MODES = {"per_tab", "concat"}
-ALLOWED_DICT_KEYS = {"name", "type", "nullable", "transform"}
+NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
+_NAME_RE = re.compile(NAME_PATTERN)
+
+SnakeCaseName = Annotated[str, Field(pattern=NAME_PATTERN)]
+ColumnType = Literal["int", "float", "text", "bool", "date", "datetime"]
+
+
+class ColumnDictSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: SnakeCaseName
+    type: ColumnType | None = None
+    nullable: bool = True
+    transform: Callable[[Any], Any] | None = None
+
+
+# A column spec is one of:
+#   - a snake_case rename string ("Email" -> "email")
+#   - a ColumnDictSpec for rename + type + transform
+#   - a bare callable (transform; preserves the source column name, which
+#     must already be snake_case)
+def _column_spec_kind(v: Any) -> str | None:
+    if isinstance(v, str):
+        return "str"
+    if isinstance(v, dict | ColumnDictSpec):
+        return "dict"
+    if callable(v):
+        return "callable"
+    return None
+
+
+ColumnSpec = Annotated[
+    Annotated[SnakeCaseName, Tag("str")] | Annotated[ColumnDictSpec, Tag("dict")] | Annotated[Callable[[Any], Any], Tag("callable")],
+    Discriminator(_column_spec_kind),
+]
+
+
+def _validate_columns(columns: dict[str, Any]) -> dict[str, Any]:
+    """Shared model_validator body for any model that has a `columns` dict.
+
+    Enforces:
+      - source name for callable specs must be snake_case (preserved as-is)
+      - final column names don't collide
+    """
+    seen_final: set[str] = set()
+    for src, spec in columns.items():
+        if callable(spec) and not isinstance(spec, ColumnDictSpec):
+            if not _NAME_RE.match(src):
+                raise ValueError(
+                    f"columns[{src!r}]: callable preserves source name, "
+                    f"which must match {NAME_PATTERN}"
+                )
+            final = src
+        elif isinstance(spec, ColumnDictSpec):
+            final = spec.name
+        elif isinstance(spec, str):
+            final = spec
+        else:
+            continue
+        if final in seen_final:
+            raise ValueError(
+                f"columns[{src!r}]: final column name {final!r} collides with another column"
+            )
+        seen_final.add(final)
+    return columns
+
+
+class _DefinitionBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: SnakeCaseName
+    path: str = Field(min_length=1)
+
+
+class CsvDefinition(_DefinitionBase):
+    kind: Literal["csv"]
+    table: SnakeCaseName
+    columns: dict[str, ColumnSpec] = Field(min_length=1)
+    encoding: str = "utf-8"
+    delimiter: str = ","
+    header_row: int = 0
+
+    @model_validator(mode="after")
+    def _check_columns(self) -> CsvDefinition:
+        _validate_columns(self.columns)
+        return self
+
+    @property
+    def tables(self) -> list[str]:
+        return [self.table]
+
+
+class XlsxPerTabSheet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    table: SnakeCaseName
+    columns: dict[str, ColumnSpec] = Field(min_length=1)
+    header_row: int = 0
+
+    @model_validator(mode="after")
+    def _check_columns(self) -> XlsxPerTabSheet:
+        _validate_columns(self.columns)
+        return self
+
+
+class XlsxPerTabDefinition(_DefinitionBase):
+    kind: Literal["xlsx"]
+    mode: Literal["per_tab"] = "per_tab"
+    sheets: dict[str, XlsxPerTabSheet] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_table_names(self) -> XlsxPerTabDefinition:
+        seen: set[str] = set()
+        for tab, cfg in self.sheets.items():
+            if cfg.table in seen:
+                raise ValueError(
+                    f"sheets[{tab!r}].table {cfg.table!r} duplicates another sheet"
+                )
+            seen.add(cfg.table)
+        return self
+
+    @property
+    def tables(self) -> list[str]:
+        return [s.table for s in self.sheets.values()]
+
+
+class XlsxConcatDefinition(_DefinitionBase):
+    kind: Literal["xlsx"]
+    mode: Literal["concat"]
+    table: SnakeCaseName
+    sheets: list[str] = Field(min_length=1)
+    columns: dict[str, ColumnSpec] = Field(min_length=1)
+    source_tab_column: SnakeCaseName = "source_tab"
+    header_row: int = 0
+
+    @model_validator(mode="after")
+    def _sheet_names_nonempty(self) -> XlsxConcatDefinition:
+        if not all(isinstance(s, str) and s for s in self.sheets):
+            raise ValueError("`sheets` must contain only non-empty strings")
+        _validate_columns(self.columns)
+        return self
+
+    @property
+    def tables(self) -> list[str]:
+        return [self.table]
+
+
+Definition = CsvDefinition | XlsxPerTabDefinition | XlsxConcatDefinition
 
 
 @dataclass(frozen=True)
@@ -28,12 +181,18 @@ class ValidationError:
         return f"[{tag}] {self.message}"
 
 
-@dataclass
+@dataclass(frozen=True)
 class ValidatedDefinition:
     source_path: Path
-    key: str
-    raw: dict[str, Any]
-    tables: list[str] = field(default_factory=list)
+    definition: Definition
+
+    @property
+    def key(self) -> str:
+        return self.definition.key
+
+    @property
+    def tables(self) -> list[str]:
+        return self.definition.tables
 
 
 def validate_all(
@@ -44,327 +203,59 @@ def validate_all(
     errors: list[ValidationError] = []
 
     for d in loaded:
-        per_def_errors = _validate_one(d.source_path, d.raw)
-        if per_def_errors:
-            errors.extend(per_def_errors)
-            continue
-        valid.append(
-            ValidatedDefinition(
-                source_path=d.source_path,
-                key=d.raw["key"],
-                raw=d.raw,
-                tables=_final_tables(d.raw),
-            )
-        )
+        result = _parse_one(d.source_path, d.raw)
+        if isinstance(result, list):
+            errors.extend(result)
+        else:
+            valid.append(ValidatedDefinition(source_path=d.source_path, definition=result))
 
     errors.extend(_cross_definition_checks(valid, active))
-
-    valid_keys = {v.key for v in valid}
-    surviving = [v for v in valid if v.key in valid_keys]
-    return surviving, errors
+    return valid, errors
 
 
-def _validate_one(source_path: Path, raw: dict[str, Any]) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    key = raw.get("key")
-
-    if not isinstance(key, str) or not NAME_RE.match(key):
-        errors.append(
-            ValidationError(source_path, None, f"`key` must match {NAME_RE.pattern}; got {key!r}")
-        )
-        return errors
-
+def _parse_one(
+    source_path: Path, raw: dict[str, Any]
+) -> Definition | list[ValidationError]:
+    raw_key = raw.get("key")
+    key = raw_key if isinstance(raw_key, str) else None
     kind = raw.get("kind")
-    if kind not in ALLOWED_KINDS:
-        errors.append(
-            ValidationError(
-                source_path, key, f"`kind` must be one of {sorted(ALLOWED_KINDS)}; got {kind!r}"
-            )
-        )
-        return errors
 
-    path = raw.get("path")
-    if not isinstance(path, str) or not path:
-        errors.append(ValidationError(source_path, key, "`path` must be a non-empty string"))
-
-    if kind == "csv":
-        errors.extend(_validate_csv(source_path, key, raw))
-    elif kind == "xlsx":
-        errors.extend(_validate_xlsx(source_path, key, raw))
-
-    return errors
-
-
-def _validate_csv(source_path: Path, key: str, raw: dict[str, Any]) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    if "sheets" in raw or "mode" in raw:
-        errors.append(
-            ValidationError(source_path, key, "csv definition must not include `sheets` or `mode`")
-        )
-    table = raw.get("table")
-    if not isinstance(table, str) or not NAME_RE.match(table):
-        errors.append(
-            ValidationError(
-                source_path, key, f"`table` must match {NAME_RE.pattern}; got {table!r}"
-            )
-        )
-    columns = raw.get("columns")
-    errors.extend(_validate_columns(source_path, key, columns))
-    return errors
-
-
-def _validate_xlsx(source_path: Path, key: str, raw: dict[str, Any]) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    mode = raw.get("mode", "per_tab")
-    if mode not in ALLOWED_XLSX_MODES:
+    try:
+        if kind == "csv":
+            return CsvDefinition.model_validate(raw)
+        if kind == "xlsx":
+            mode = raw.get("mode", "per_tab")
+            if mode == "per_tab":
+                return XlsxPerTabDefinition.model_validate(raw)
+            if mode == "concat":
+                return XlsxConcatDefinition.model_validate(raw)
+            return [
+                ValidationError(
+                    source_path,
+                    key,
+                    f"`mode` must be one of ['concat', 'per_tab']; got {mode!r}",
+                )
+            ]
         return [
             ValidationError(
-                source_path,
-                key,
-                f"`mode` must be one of {sorted(ALLOWED_XLSX_MODES)}; got {mode!r}",
+                source_path, key, f"`kind` must be one of ['csv', 'xlsx']; got {kind!r}"
             )
         ]
-
-    if mode == "per_tab":
-        errors.extend(_validate_xlsx_per_tab(source_path, key, raw))
-    else:
-        errors.extend(_validate_xlsx_concat(source_path, key, raw))
-    return errors
+    except PydanticValidationError as exc:
+        return _convert_pydantic_errors(exc, source_path, key)
 
 
-def _validate_xlsx_per_tab(
-    source_path: Path, key: str, raw: dict[str, Any]
+def _convert_pydantic_errors(
+    exc: PydanticValidationError, source_path: Path, key: str | None
 ) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    if "table" in raw or "columns" in raw:
-        errors.append(
-            ValidationError(
-                source_path,
-                key,
-                "per_tab xlsx must not have top-level `table` or `columns`; specify per-sheet",
-            )
-        )
-    sheets = raw.get("sheets")
-    if not isinstance(sheets, dict) or not sheets:
-        errors.append(
-            ValidationError(source_path, key, "`sheets` must be a non-empty dict for per_tab mode")
-        )
-        return errors
-
-    seen_tables: set[str] = set()
-    for tab_name, sheet_cfg in sheets.items():
-        if not isinstance(tab_name, str) or not tab_name:
-            errors.append(
-                ValidationError(
-                    source_path, key, f"sheet tab name must be a non-empty string; got {tab_name!r}"
-                )
-            )
-            continue
-        if not isinstance(sheet_cfg, dict):
-            errors.append(ValidationError(source_path, key, f"sheets[{tab_name!r}] must be a dict"))
-            continue
-        table = sheet_cfg.get("table")
-        if not isinstance(table, str) or not NAME_RE.match(table):
-            errors.append(
-                ValidationError(
-                    source_path,
-                    key,
-                    f"sheets[{tab_name!r}].table must match {NAME_RE.pattern}; got {table!r}",
-                )
-            )
-        elif table in seen_tables:
-            errors.append(
-                ValidationError(
-                    source_path,
-                    key,
-                    f"sheets[{tab_name!r}].table {table!r} duplicates another sheet in this definition",
-                )
-            )
-        else:
-            seen_tables.add(table)
-        errors.extend(
-            _validate_columns(
-                source_path, key, sheet_cfg.get("columns"), where=f"sheets[{tab_name!r}]"
-            )
-        )
-        if "header_row" in sheet_cfg and not isinstance(sheet_cfg["header_row"], int):
-            errors.append(
-                ValidationError(source_path, key, f"sheets[{tab_name!r}].header_row must be an int")
-            )
-    return errors
-
-
-def _validate_xlsx_concat(
-    source_path: Path, key: str, raw: dict[str, Any]
-) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    table = raw.get("table")
-    if not isinstance(table, str) or not NAME_RE.match(table):
-        errors.append(
-            ValidationError(
-                source_path,
-                key,
-                f"concat mode requires `table` matching {NAME_RE.pattern}; got {table!r}",
-            )
-        )
-    sheets = raw.get("sheets")
-    if not isinstance(sheets, list) or not sheets:
-        errors.append(
-            ValidationError(
-                source_path, key, "concat mode requires `sheets` as a non-empty list of tab names"
-            )
-        )
-    elif not all(isinstance(s, str) and s for s in sheets):
-        errors.append(
-            ValidationError(source_path, key, "concat `sheets` must contain only non-empty strings")
-        )
-    if "source_tab_column" in raw:
-        stc = raw["source_tab_column"]
-        if not isinstance(stc, str) or not NAME_RE.match(stc):
-            errors.append(
-                ValidationError(
-                    source_path,
-                    key,
-                    f"`source_tab_column` must match {NAME_RE.pattern}; got {stc!r}",
-                )
-            )
-    errors.extend(_validate_columns(source_path, key, raw.get("columns")))
-    return errors
-
-
-def _validate_columns(
-    source_path: Path,
-    key: str,
-    columns: Any,
-    where: str = "columns",
-) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    if not isinstance(columns, dict) or not columns:
-        return [ValidationError(source_path, key, f"`{where}` must be a non-empty dict")]
-    seen_final: set[str] = set()
-    for src, spec in columns.items():
-        if not isinstance(src, str) or not src:
-            errors.append(
-                ValidationError(
-                    source_path, key, f"{where}: source column name must be a non-empty string"
-                )
-            )
-            continue
-        final_name = _final_name(spec)
-        if isinstance(spec, str):
-            if not NAME_RE.match(spec):
-                errors.append(
-                    ValidationError(
-                        source_path,
-                        key,
-                        f"{where}[{src!r}]: rename {spec!r} must match {NAME_RE.pattern}",
-                    )
-                )
-        elif isinstance(spec, dict):
-            errors.extend(_validate_dict_spec(source_path, key, src, spec, where))
-        elif callable(spec):
-            if not NAME_RE.match(src):
-                errors.append(
-                    ValidationError(
-                        source_path,
-                        key,
-                        f"{where}[{src!r}]: callable preserves source name, which must match {NAME_RE.pattern}",
-                    )
-                )
-        else:
-            errors.append(
-                ValidationError(
-                    source_path,
-                    key,
-                    f"{where}[{src!r}]: spec must be str, dict, or callable; got {type(spec).__name__}",
-                )
-            )
-            continue
-        if final_name and final_name in seen_final:
-            errors.append(
-                ValidationError(
-                    source_path,
-                    key,
-                    f"{where}[{src!r}]: final column name {final_name!r} collides with another column",
-                )
-            )
-        elif final_name:
-            seen_final.add(final_name)
-    return errors
-
-
-def _validate_dict_spec(
-    source_path: Path,
-    key: str,
-    src: str,
-    spec: dict[str, Any],
-    where: str,
-) -> list[ValidationError]:
-    errors: list[ValidationError] = []
-    unknown = set(spec) - ALLOWED_DICT_KEYS
-    if unknown:
-        errors.append(
-            ValidationError(
-                source_path,
-                key,
-                f"{where}[{src!r}]: unknown keys {sorted(unknown)} (allowed: {sorted(ALLOWED_DICT_KEYS)})",
-            )
-        )
-    name = spec.get("name")
-    if not isinstance(name, str) or not NAME_RE.match(name):
-        errors.append(
-            ValidationError(
-                source_path,
-                key,
-                f"{where}[{src!r}]: dict spec requires `name` matching {NAME_RE.pattern}",
-            )
-        )
-    if "type" in spec and spec["type"] not in ALLOWED_TYPES:
-        errors.append(
-            ValidationError(
-                source_path,
-                key,
-                f"{where}[{src!r}]: type must be one of {sorted(ALLOWED_TYPES)}; got {spec['type']!r}",
-            )
-        )
-    if "nullable" in spec and not isinstance(spec["nullable"], bool):
-        errors.append(
-            ValidationError(source_path, key, f"{where}[{src!r}]: `nullable` must be bool")
-        )
-    if "transform" in spec and not callable(spec["transform"]):
-        errors.append(
-            ValidationError(source_path, key, f"{where}[{src!r}]: `transform` must be callable")
-        )
-    return errors
-
-
-def _final_name(spec: Any) -> str | None:
-    if isinstance(spec, str):
-        return spec
-    if isinstance(spec, dict):
-        n = spec.get("name")
-        return n if isinstance(n, str) else None
-    return None
-
-
-def _final_tables(raw: dict[str, Any]) -> list[str]:
-    kind = raw.get("kind")
-    if kind == "csv":
-        t = raw.get("table")
-        return [t] if isinstance(t, str) else []
-    if kind == "xlsx":
-        mode = raw.get("mode", "per_tab")
-        if mode == "concat":
-            t = raw.get("table")
-            return [t] if isinstance(t, str) else []
-        sheets = raw.get("sheets") or {}
-        if isinstance(sheets, dict):
-            return [
-                cfg["table"]
-                for cfg in sheets.values()
-                if isinstance(cfg, dict) and isinstance(cfg.get("table"), str)
-            ]
-    return []
+    out: list[ValidationError] = []
+    for err in exc.errors():
+        loc_parts = [str(p) for p in err["loc"] if p != "function-after"]
+        loc = ".".join(loc_parts)
+        # Pydantic prefixes custom ValueError messages with "Value error, ".
+        msg = err["msg"].removeprefix("Value error, ")
+        out.append(ValidationError(source_path, key, f"{loc}: {msg}" if loc else msg))
+    return out
 
 
 def _cross_definition_checks(

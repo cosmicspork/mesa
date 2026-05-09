@@ -3,15 +3,13 @@ from pathlib import Path
 import sqlite_utils
 
 from mesa.ingest import run
-from mesa.validator import ValidatedDefinition
+from mesa.validator import ValidatedDefinition, XlsxConcatDefinition
 
 
 def _vd(raw: dict) -> ValidatedDefinition:
     return ValidatedDefinition(
         source_path=Path("definitions/sales_all.py"),
-        key=raw["key"],
-        raw=raw,
-        tables=[raw["table"]],
+        definition=XlsxConcatDefinition.model_validate(raw),
     )
 
 

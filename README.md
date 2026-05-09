@@ -1,6 +1,14 @@
 # Mesa
 
-A lightweight local ETL framework. Drop a Python file per spreadsheet into `definitions/`, double-click `run.bat` (or `./run.sh`), and Mesa rebuilds a SQLite database from xlsx and csv files on a mounted team drive — queryable from DataGrip.
+A lightweight local ETL framework. Drop a Python file per spreadsheet into `definitions/`, double-click `run.bat` (or `./run.sh`), and Mesa rebuilds a SQLite database from xlsx and csv files anywhere on disk — queryable from DataGrip.
+
+## Why this exists
+
+Sometimes you just want to *look at the data*. You have a spreadsheet (or a few) in your Documents folder, in a synced OneDrive or SharePoint folder, on a team file share — and you want to write SQL against it without standing up a real pipeline.
+
+That's what Mesa is for. Each source becomes a Python file in `definitions/`. Mesa reads it, normalizes the columns, and drops it into a SQLite file you can point DataGrip / TablePlus / DBeaver / DuckDB at.
+
+Re-runs are full-rebuild and idempotent, so the same setup that's "throwaway exploration" today works fine as a recurring job tomorrow.
 
 ## Install
 
@@ -19,9 +27,9 @@ uv run ruff check .     # lint
 uv run mypy mesa/       # type check
 ```
 
-The `run.bat` and `run.sh` wrappers exist so the analyst can double-click rather than open a terminal.
+The `run.bat` and `run.sh` wrappers exist for double-click runs without opening a terminal.
 
-## What the analyst touches
+## What you'll edit
 
 | File / folder | Purpose |
 |---|---|
@@ -31,7 +39,7 @@ The `run.bat` and `run.sh` wrappers exist so the analyst can double-click rather
 
 ## Architecture
 
-- `mesa/` — framework. Auto-discovers `definitions/*.py`, validates each, ingests the active ones into SQLite via pandas + sqlite-utils. Written once.
+- `mesa/` — framework. Auto-discovers `definitions/*.py`, validates each (pydantic), ingests the active ones into SQLite (polars + sqlite-utils). Written once.
 - `definitions/` — one file per source. Each exposes a `definition = {...}` dict. Files starting with `_` are skipped by discovery but importable as modules (use them for shared helpers).
 - `config.py` — lists active keys and the database path. Lives at the repo root, never inside the package.
 
@@ -147,6 +155,19 @@ Mesa isolates failures so one bad definition doesn't stop the rest:
 | 0 | All active definitions ingested cleanly |
 | 1 | Ran, but at least one load/validation/ingest error |
 | 2 | Aborted before ingest (config invalid, definitions dir missing, source paths missing) |
+
+## Non-goals & limitations
+
+Mesa is built for local exploration and small recurring jobs. If you need any of the below, reach for something else:
+
+- **Incremental / delta loads.** Every run is a full drop-and-rewrite of the active tables. There is no change-data-capture, no upsert, no append-only mode.
+- **Schema evolution.** Change a column's type or rename it and the next run just produces a different table — no migration, no history. Versioning a database means switching `DB_PATH` to a new file.
+- **Remote sources, auth, or network fetching.** The source has to already be reachable as a local file path. OneDrive/SharePoint sync, mapped network drives, and Documents folders all work because the OS exposes them as paths; cloud APIs and authenticated URLs do not.
+
+Smaller sharp edges worth knowing:
+
+- Source columns you don't list in `columns` are dropped silently. Opt in to every column you want.
+- CSV reads pull every column as text by default. Declare a `type` in the dict spec if you need a typed SQLite column; SQLite's type affinity will convert numeric-looking strings on insert.
 
 ## Folder layout
 

@@ -3,7 +3,7 @@ from pathlib import Path
 import sqlite_utils
 
 from mesa.ingest import run
-from mesa.validator import ValidatedDefinition
+from mesa.validator import ValidatedDefinition, XlsxPerTabDefinition
 
 
 def _money(v: object) -> float | None:
@@ -13,11 +13,10 @@ def _money(v: object) -> float | None:
 
 
 def _vd(raw: dict, tables: list[str]) -> ValidatedDefinition:
+    del tables  # tables now derived from the parsed pydantic model
     return ValidatedDefinition(
         source_path=Path("definitions/sales.py"),
-        key=raw["key"],
-        raw=raw,
-        tables=tables,
+        definition=XlsxPerTabDefinition.model_validate(raw),
     )
 
 

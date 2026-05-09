@@ -80,48 +80,48 @@ def test_polymorphic_columns_all_three_forms() -> None:
 
 def test_invalid_key_regex() -> None:
     _, errors = validate_all([_ld("bad", _csv(key="Bad-Key"))], active=[])
-    assert any("`key` must match" in str(e) for e in errors)
+    assert any("key" in str(e) and "should match pattern" in str(e) for e in errors)
 
 
 def test_kebab_case_key_rejected() -> None:
     _, errors = validate_all([_ld("kebab", _csv(key="monthly-invoices"))], active=[])
-    assert any("`key` must match" in str(e) for e in errors)
+    assert any("key" in str(e) and "should match pattern" in str(e) for e in errors)
 
 
 def test_csv_must_not_have_sheets() -> None:
     raw = _csv(sheets={"Jan": {}})
     _, errors = validate_all([_ld("things", raw)], active=["things"])
-    assert any("must not include `sheets`" in str(e) for e in errors)
+    assert any("sheets" in str(e) and "Extra inputs are not permitted" in str(e) for e in errors)
 
 
 def test_xlsx_per_tab_with_top_level_table_rejected() -> None:
     raw = _xlsx_per_tab(table="x")
     _, errors = validate_all([_ld("sales", raw)], active=["sales"])
-    assert any("must not have top-level" in str(e) for e in errors)
+    assert any("table" in str(e) and "Extra inputs are not permitted" in str(e) for e in errors)
 
 
 def test_xlsx_concat_requires_sheets_list() -> None:
     raw = _xlsx_concat(sheets={"Jan": {}})
     _, errors = validate_all([_ld("sales", raw)], active=["sales_all"])
-    assert any("non-empty list of tab names" in str(e) for e in errors)
+    assert any("sheets" in str(e) and "valid list" in str(e) for e in errors)
 
 
 def test_dict_spec_missing_name() -> None:
     raw = _csv(columns={"Amount": {"type": "float"}})
     _, errors = validate_all([_ld("things", raw)], active=["things"])
-    assert any("requires `name`" in str(e) for e in errors)
+    assert any("name" in str(e) and "Field required" in str(e) for e in errors)
 
 
 def test_dict_spec_unknown_key_rejected() -> None:
     raw = _csv(columns={"Amount": {"name": "amount", "weird": True}})
     _, errors = validate_all([_ld("things", raw)], active=["things"])
-    assert any("unknown keys" in str(e) for e in errors)
+    assert any("weird" in str(e) and "Extra inputs are not permitted" in str(e) for e in errors)
 
 
 def test_dict_spec_bad_type_rejected() -> None:
     raw = _csv(columns={"Amount": {"name": "amount", "type": "bigint"}})
     _, errors = validate_all([_ld("things", raw)], active=["things"])
-    assert any("type must be one of" in str(e) for e in errors)
+    assert any("type" in str(e) and "should be" in str(e) and "'int'" in str(e) for e in errors)
 
 
 def test_callable_spec_with_bad_source_name_rejected() -> None:
@@ -166,5 +166,5 @@ def test_active_key_missing_reported() -> None:
 def test_active_key_with_failed_validation_reported_as_missing() -> None:
     _, errors = validate_all([_ld("bad", _csv(key="Bad-Name"))], active=["Bad-Name"])
     msgs = [str(e) for e in errors]
-    assert any("`key` must match" in m for m in msgs)
+    assert any("key" in m and "should match pattern" in m for m in msgs)
     assert any("ACTIVE key 'Bad-Name'" in m for m in msgs)

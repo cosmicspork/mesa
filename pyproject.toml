@@ -6,9 +6,10 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "pandas>=2.2,<3",
+    "polars>=1.0,<2",
+    "fastexcel>=0.10",
     "sqlite-utils>=3.36,<4",
-    "openpyxl>=3.1,<4",
+    "pydantic>=2.5,<3",
 ]
 
 [project.optional-dependencies]
@@ -16,7 +17,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "pytest>=8",
-    "pandas-stubs",
+    "openpyxl>=3.1,<4",
 ]
 
 [project.scripts]
@@ -42,7 +43,7 @@ python_version = "3.13"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["sqlite_utils.*"]
+module = ["sqlite_utils.*", "fastexcel.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
