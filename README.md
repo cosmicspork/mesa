@@ -1,12 +1,12 @@
 # Mesa
 
-A lightweight local ETL framework. Drop a Python file per spreadsheet into `definitions/`, double-click `run.bat` (or `./run.sh`), and Mesa rebuilds a SQLite database from xlsx and csv files anywhere on disk — queryable from DataGrip.
+A lightweight local ETL framework. Drop a Python file per spreadsheet into `definitions/`, double-click `run.bat` (or `./run.sh`), and Mesa rebuilds a SQLite database from xlsx and csv files anywhere on disk.
 
 ## Why this exists
 
 Sometimes you just want to *look at the data*. You have a spreadsheet (or a few) in your Documents folder, in a synced OneDrive or SharePoint folder, on a team file share — and you want to write SQL against it without standing up a real pipeline.
 
-That's what Mesa is for. Each source becomes a Python file in `definitions/`. Mesa reads it, normalizes the columns, and drops it into a SQLite file you can point DataGrip / TablePlus / DBeaver / DuckDB at.
+That's what Mesa is for. Each source becomes a Python file in `definitions/`. Mesa reads it, normalizes the columns, and drops it into a SQLite file you can point your tools at.
 
 Re-runs are full-rebuild and idempotent, so the same setup that's "throwaway exploration" today works fine as a recurring job tomorrow.
 
@@ -39,9 +39,9 @@ The `run.bat` and `run.sh` wrappers exist for double-click runs without opening 
 
 ## Architecture
 
-- `mesa/` — framework. Auto-discovers `definitions/*.py`, validates each (pydantic), ingests the active ones into SQLite (polars + sqlite-utils). Written once.
+- `mesa/` — framework. Auto-discovers `definitions/*.py`, validates each (pydantic), ingests the active ones into SQLite (polars + sqlite-utils).
 - `definitions/` — one file per source. Each exposes a `definition = {...}` dict. Files starting with `_` are skipped by discovery but importable as modules (use them for shared helpers).
-- `config.py` — lists active keys and the database path. Lives at the repo root, never inside the package.
+- `config.py` — lists active keys and the database path.
 
 Each run drops and rewrites only the tables belonging to active definitions. Tables from definitions that are commented out of `ACTIVE` are left alone.
 
@@ -121,7 +121,7 @@ Each entry in `columns` maps a source column name to one of three forms:
 
 Dict keys: `name` (required), `type` (`int|float|text|bool|date|datetime`), `nullable` (default True), `transform` (callable).
 
-Source columns not listed in `columns` are dropped — opt in explicitly.
+Source columns not listed in `columns` are dropped.
 
 ## config.py
 
@@ -168,19 +168,3 @@ Smaller sharp edges worth knowing:
 
 - Source columns you don't list in `columns` are dropped silently. Opt in to every column you want.
 - CSV reads pull every column as text by default. Declare a `type` in the dict spec if you need a typed SQLite column; SQLite's type affinity will convert numeric-looking strings on insert.
-
-## Folder layout
-
-```
-mesa/
-├── mesa/                  # framework code (rarely touched)
-├── definitions/           # one .py per source; _-prefixed files are helpers
-├── tests/
-│   └── fixtures/          # sample xlsx/csv that ship with the example definitions
-├── db/                    # SQLite output (.gitkeep)
-├── config.py
-├── pyproject.toml
-├── run.bat
-├── run.sh
-└── README.md
-```
