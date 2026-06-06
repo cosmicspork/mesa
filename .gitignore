@@ -220,3 +220,6 @@ __marimo__/
 # Mesa output databases
 db/*.db
 db/*.sqlite
+
+# Real config (names your active definitions + paths). Ship config.example.py instead.
+/config.py

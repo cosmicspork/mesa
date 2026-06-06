@@ -16,6 +16,7 @@ Requires [uv](https://github.com/astral-sh/uv) and Python 3.13.
 
 ```bash
 uv sync --extra dev
+cp config.example.py config.py     # then edit ACTIVE
 ```
 
 ## Run
