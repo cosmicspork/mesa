@@ -158,7 +158,30 @@ class XlsxConcatDefinition(_DefinitionBase):
     def _sheet_names_nonempty(self) -> XlsxConcatDefinition:
         if not all(isinstance(s, str) and s for s in self.sheets):
             raise ValueError("`sheets` must contain only non-empty strings")
+
+        # Check for duplicate sheet names
+        if len(self.sheets) != len(set(self.sheets)):
+            raise ValueError("`sheets` contains duplicate names")
+
         _validate_columns(self.columns)
+
+        # Check if source_tab_column collides with any final column name
+        seen_final: set[str] = set()
+        for src, spec in self.columns.items():
+            if callable(spec) and not isinstance(spec, ColumnDictSpec):
+                final = src
+            elif isinstance(spec, ColumnDictSpec):
+                final = spec.name
+            elif isinstance(spec, str):
+                final = spec
+            else:
+                continue
+            seen_final.add(final)
+
+        if self.source_tab_column in seen_final:
+            raise ValueError(
+                f"source_tab_column '{self.source_tab_column}' collides with a column"
+            )
         return self
 
     @property
