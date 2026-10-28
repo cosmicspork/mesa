@@ -168,3 +168,47 @@ def test_active_key_with_failed_validation_reported_as_missing() -> None:
     msgs = [str(e) for e in errors]
     assert any("key" in m and "should match pattern" in m for m in msgs)
     assert any("ACTIVE key 'Bad-Name'" in m for m in msgs)
+
+
+def test_xlsx_concat_source_tab_column_collision_default() -> None:
+    """source_tab_column collides with a column renamed to 'source_tab'."""
+    raw = _xlsx_concat(
+        columns={
+            "Order ID": "order_id",
+            "Some Column": "source_tab",  # This renames to source_tab - collision!
+        }
+    )
+    _, errors = validate_all([_ld("sales", raw)], active=["sales_all"])
+    assert any("source_tab_column" in str(e) and "collides" in str(e) for e in errors)
+
+
+def test_xlsx_concat_source_tab_column_collision_custom() -> None:
+    """source_tab_column collides with a column renamed to the custom name."""
+    raw = _xlsx_concat(
+        source_tab_column="tab_name",
+        columns={
+            "Order ID": "order_id",
+            "Some Column": "tab_name",  # This renames to tab_name - collision!
+        }
+    )
+    _, errors = validate_all([_ld("sales", raw)], active=["sales_all"])
+    assert any("source_tab_column" in str(e) and "collides" in str(e) for e in errors)
+
+
+def test_xlsx_concat_source_tab_column_collision_dict_spec() -> None:
+    """source_tab_column collides with a ColumnDictSpec column."""
+    raw = _xlsx_concat(
+        columns={
+            "Order ID": {"name": "order_id"},
+            "Some Column": {"name": "source_tab"},  # This renames to source_tab - collision!
+        }
+    )
+    _, errors = validate_all([_ld("sales", raw)], active=["sales_all"])
+    assert any("source_tab_column" in str(e) and "collides" in str(e) for e in errors)
+
+
+def test_xlsx_concat_duplicate_sheets() -> None:
+    """sheets list contains duplicate sheet names."""
+    raw = _xlsx_concat(sheets=["Jan", "Feb", "Jan"])  # Jan appears twice
+    _, errors = validate_all([_ld("sales", raw)], active=["sales_all"])
+    assert any("duplicate" in str(e) for e in errors)
