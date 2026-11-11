@@ -93,6 +93,8 @@ definition = {
 }
 ```
 
+The `source_tab_column` name must not match any final column name, and `sheets` must not repeat a tab; otherwise validation fails and the definition is skipped.
+
 ### csv
 
 ```python
