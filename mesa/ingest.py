@@ -148,7 +148,9 @@ def _apply_columns(
     """
     missing = [src for src in spec if src not in df.columns]
     if missing:
-        raise IngestError(f"source columns not found: {missing}")
+        raise IngestError(
+            f"source columns not found: {missing}; available columns: {df.columns}"
+        )
 
     rename_map: dict[str, str] = {}
     transforms: list[tuple[str, Callable[[Any], Any], type | None]] = []
