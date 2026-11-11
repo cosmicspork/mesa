@@ -6,7 +6,7 @@ import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import polars as pl
 import sqlite_utils
@@ -40,7 +40,7 @@ _POLARS_DTYPE: dict[type, pl.DataType] = {
 @dataclass
 class IngestResult:
     key: str
-    status: str  # "ok" | "error"
+    status: Literal["ok", "error"]
     tables: list[str] = field(default_factory=list)
     rows_written: int = 0
     message: str | None = None
